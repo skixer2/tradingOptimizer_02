@@ -37,8 +37,8 @@ def calculate_rsi(series, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-# def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAVE-USDT_history_2025-07-23_15_32_12.json'):
-def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAVE-USDT_history_2025-08-03_13_18_11.json'):
+# def run_trading_simulation(file_path='../tradingOptimizer/dataHistory/TrainingData/publicData_AAVE-USDT_history_2025-07-23_15_32_12.json'):
+def run_trading_simulation(file_path='../tradingOptimizer/dataHistory/TrainingData/publicData_AAVE-USDT_history_2025-08-03_13_18_11.json'):
     try:
         # Load data
         data = load_json_data(file_path)

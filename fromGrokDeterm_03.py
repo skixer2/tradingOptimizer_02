@@ -37,8 +37,8 @@ def calculate_rsi(series, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAVE-USDT_history_2025-07-23_15_32_12.json'):
-# def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAVE-USDT_history_2025-08-03_13_18_11.json'):
+def run_trading_simulation(file_path='../tradingOptimizer/dataHistory/TrainingData/publicData_AAVE-USDT_history_2025-07-23_15_32_12.json'):
+# def run_trading_simulation(file_path='../tradingOptimizer/dataHistory/TrainingData/publicData_AAVE-USDT_history_2025-08-03_13_18_11.json'):
     try:
         # Load data
         data = load_json_data(file_path)
@@ -90,11 +90,12 @@ def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAV
     
     # RSI parameters (on 15-min)
     rsi_window = 14
-    rsi_buy_th = 40
+    rsi_buy_th = 50  # Increased for more buys
     rsi_sell_th = 65
     
     # Volume confirmation
     use_volume_confirmation = True
+    min_volume = 150  # Adjusted minimum volume
 
     # Fees
     buy_sell_fee = 0.001
@@ -102,13 +103,15 @@ def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAV
     try:
         df_15min['volume_sma'] = df_15min['volume'].rolling(bb_window).mean()
         df_15min['sma'] = df_15min['close'].rolling(bb_window).mean()
+        df_15min['sma_50'] = df_15min['close'].rolling(50).mean()
+        df_15min['sma_200'] = df_15min['close'].rolling(200).mean()
         df_15min['std'] = df_15min['close'].rolling(bb_window).std()
         df_15min['upper'] = df_15min['sma'] + std_mult * df_15min['std']
         df_15min['lower'] = df_15min['sma'] - std_mult * df_15min['std']
         df_15min['percent_b'] = (df_15min['close'] - df_15min['lower']) / (df_15min['upper'] - df_15min['lower'])
         df_15min['sma_prev'] = df_15min['sma'].shift(trend_window)
         df_15min['slope'] = ((df_15min['sma'] - df_15min['sma_prev']) / df_15min['sma']) / trend_window
-        df_15min['slope_diff'] = df_15min['slope'].diff()
+        df_15min['slope_diff'] = df_15min['slope'].diff()  # For plot only
         df_15min['buy_th'] = 0.0 + adjustment_factor * df_15min['slope']
         df_15min['sell_th'] = 1.0 + adjustment_factor * df_15min['slope']
         
@@ -122,14 +125,15 @@ def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAV
         return None, None
     
     # Map 15-min indicators to 1-min
-    df_1min = df_1min.join(df_15min[['sma', 'upper', 'lower', 'percent_b', 'buy_th_price', 'sell_th_price', 'volume_sma', 'rsi', 'slope_diff']], how='left')
-    df_1min[['sma', 'upper', 'lower', 'percent_b', 'buy_th_price', 'sell_th_price', 'volume_sma', 'rsi', 'slope_diff']] = df_1min[['sma', 'upper', 'lower', 'percent_b', 'buy_th_price', 'sell_th_price', 'volume_sma', 'rsi', 'slope_diff']].ffill()
+    df_1min = df_1min.join(df_15min[['sma', 'sma_50', 'sma_200', 'upper', 'lower', 'percent_b', 'buy_th_price', 'sell_th_price', 'volume_sma', 'rsi', 'slope_diff']], how='left')
+    df_1min[['sma', 'sma_50', 'sma_200', 'upper', 'lower', 'percent_b', 'buy_th_price', 'sell_th_price', 'volume_sma', 'rsi', 'slope_diff']] = df_1min[['sma', 'sma_50', 'sma_200', 'upper', 'lower', 'percent_b', 'buy_th_price', 'sell_th_price', 'volume_sma', 'rsi', 'slope_diff']].ffill()
     
     # Backtest variables
     initial_cash = 10000.0
     cash = initial_cash
     position = 0.0
     entry_price = 0.0
+    highest_price = 0.0  # For trailing stop-loss
     trades = []
     equity = []
     buy_times = []
@@ -156,20 +160,23 @@ def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAV
         
         try:
             if position > 0:
-                if low_price < entry_price * 0.98:
+                highest_price = max(highest_price, price)  # Update highest price
+                if low_price < highest_price * 0.98:  # Trailing stop-loss at 2% below highest
                     cash = position * price * (1 - buy_sell_fee)
-                    trades.append(f"Minute {i} (timestamp {row_1min['timestamp']}): STOP-LOSS SELL at {price:.2f}, Cash: {cash:.2f}")
+                    trades.append(f"Minute {i} (timestamp {row_1min['timestamp']}): TRAILING STOP-LOSS SELL at {price:.2f}, Cash: {cash:.2f}")
                     sell_times.append(row_1min['timestamp'])
                     sell_prices.append(price)
                     position = 0.0
+                    highest_price = 0.0
                     equity.append(cash)
                     continue
-                elif price > entry_price * 1.03:  # Take-profit at 3%
+                elif price > entry_price * 1.05:  # Take-profit at 5%
                     cash = position * price * (1 - buy_sell_fee)
                     trades.append(f"Minute {i} (timestamp {row_1min['timestamp']}): TAKE-PROFIT SELL at {price:.2f}, Cash: {cash:.2f}")
                     sell_times.append(row_1min['timestamp'])
                     sell_prices.append(price)
                     position = 0.0
+                    highest_price = 0.0
                     equity.append(cash)
                     continue
             
@@ -187,8 +194,11 @@ def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAV
                 rsi = row_15min['rsi']
                 volume = row_15min['volume']
                 volume_sma = row_15min['volume_sma']
-                slope_diff = row_15min['slope_diff']
-                volume_ok = (not use_volume_confirmation) or (volume > 0.5 * volume_sma)
+                sma_50 = row_15min['sma_50']
+                sma_200 = row_15min['sma_200']
+                slope_diff = row_15min['slope_diff']  # For debug only
+                volume_ok = (not use_volume_confirmation) or (volume > 0.8 * volume_sma and volume > min_volume)
+                trend_ok = pd.isna(sma_50) or pd.isna(sma_200) or sma_50 > sma_200
                 
                 # Debug
                 debug_data.append({
@@ -202,6 +212,8 @@ def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAV
                     'volume': volume,
                     'volume_sma': volume_sma if not pd.isna(volume_sma) else np.nan,
                     'volume_ok': volume_ok,
+                    'sma_50': sma_50 if not pd.isna(sma_50) else np.nan,
+                    'sma_200': sma_200 if not pd.isna(sma_200) else np.nan,
                     'slope_diff': slope_diff if not pd.isna(slope_diff) else np.nan,
                     'in_position': position > 0
                 })
@@ -210,11 +222,14 @@ def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAV
                 if position == 0 and percent_b < buy_th and rsi >= rsi_buy_th:
                     print(f"Missed buy at minute {i} (ts {row_1min['timestamp']}): %B={percent_b:.4f} < buy_th={buy_th:.4f}, but RSI={rsi:.2f} >= {rsi_buy_th}")
                 elif position == 0 and percent_b < buy_th and not volume_ok:
-                    print(f"Missed buy at minute {i} (ts {row_1min['timestamp']}): %B={percent_b:.4f} < buy_th={buy_th:.4f}, but volume={volume:.2f} <= volume_sma/2={volume_sma/2:.2f}")
+                    print(f"Missed buy at minute {i} (ts {row_1min['timestamp']}): %B={percent_b:.4f} < buy_th={buy_th:.4f}, but volume={volume:.2f} <= 0.8*volume_sma={0.8*volume_sma:.2f} or volume < {min_volume}")
+                elif position == 0 and percent_b < buy_th and not trend_ok:
+                    print(f"Missed buy at minute {i} (ts {row_1min['timestamp']}): %B={percent_b:.4f} < buy_th={buy_th:.4f}, but sma_50={sma_50:.2f} <= sma_200={sma_200:.2f}")
                 
-                if position == 0 and percent_b < buy_th and rsi < rsi_buy_th and volume_ok:
+                if position == 0 and percent_b < buy_th and rsi < rsi_buy_th and volume_ok and trend_ok:
                     position = cash / price * (1 - buy_sell_fee)
                     entry_price = price
+                    highest_price = price
                     cash = 0.0
                     trades.append(f"Minute {i} (timestamp {row_1min['timestamp']}): BUY at {price:.2f}, Position: {position:.4f}")
                     buy_times.append(row_1min['timestamp'])
@@ -223,6 +238,7 @@ def run_trading_simulation(file_path='../dataHistory/TrainingData/publicData_AAV
                 elif position > 0 and percent_b > sell_th and rsi > rsi_sell_th:
                     cash = position * price * (1 - buy_sell_fee)
                     position = 0.0
+                    highest_price = 0.0
                     trades.append(f"Minute {i} (timestamp {row_1min['timestamp']}): SELL at {price:.2f}, Cash: {cash:.2f}")
                     sell_times.append(row_1min['timestamp'])
                     sell_prices.append(price)
